@@ -1,0 +1,164 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function bootstrapOpen() {
+      return !exists(/databases/$(database)/documents/system/bootstrap);
+    }
+
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function currentUserExists() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasRole(role) {
+      return currentUserExists() && currentUserDoc().role == role;
+    }
+
+    function isGeneralAdmin() {
+      return hasRole('general_admin');
+    }
+
+    function isBranchAdmin() {
+      return hasRole('branch_admin');
+    }
+
+    function isEmployee() {
+      return hasRole('employee');
+    }
+
+    function isRider() {
+      return hasRole('rider');
+    }
+
+    function isCustomer() {
+      return hasRole('customer');
+    }
+
+    function sameBranch(branchId) {
+      return currentUserExists() && currentUserDoc().branchId == branchId;
+    }
+
+    function validCustomerProfile(uid) {
+      return request.resource.data.uid == uid
+        && request.resource.data.role == 'customer'
+        && request.resource.data.firstName is string
+        && request.resource.data.lastName is string
+        && request.resource.data.email is string
+        && request.resource.data.phoneNo is string
+        && request.resource.data.status is string;
+    }
+
+    function validBootstrapGeneralAdmin(uid) {
+      return request.resource.data.uid == uid
+        && request.resource.data.role == 'general_admin'
+        && request.resource.data.firstName is string
+        && request.resource.data.lastName is string
+        && request.resource.data.email is string
+        && request.resource.data.phoneNo is string
+        && request.resource.data.status == 'Active';
+    }
+
+    function validMembership() {
+      return request.resource.data.type in ['Silver', 'Gold']
+        && request.resource.data.points is number;
+    }
+
+    match /system/bootstrap {
+      allow read: if true;
+      allow create: if bootstrapOpen()
+        && isSignedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.role == 'general_admin';
+      allow update, delete: if false;
+    }
+
+    match /users/{uid} {
+      allow create: if (isOwner(uid) && validCustomerProfile(uid))
+        || (bootstrapOpen() && isOwner(uid) && validBootstrapGeneralAdmin(uid))
+        || (isGeneralAdmin()
+          && request.resource.data.role in ['branch_admin', 'employee', 'rider']
+          && request.resource.data.uid == uid)
+        || (isBranchAdmin()
+          && request.resource.data.role in ['employee', 'rider']
+          && request.resource.data.uid == uid
+          && request.resource.data.branchId == currentUserDoc().branchId);
+
+      allow read: if isOwner(uid)
+        || isGeneralAdmin()
+        || ((isBranchAdmin() || isEmployee())
+          && resource.data.branchId == currentUserDoc().branchId
+          && resource.data.role in ['branch_admin', 'employee', 'rider']);
+
+      allow update: if isOwner(uid)
+        || isGeneralAdmin()
+        || (isBranchAdmin()
+          && resource.data.branchId == currentUserDoc().branchId
+          && resource.data.role in ['employee', 'rider']);
+
+      allow delete: if false;
+    }
+
+    match /memberships/{uid} {
+      allow create: if isOwner(uid) && validMembership();
+      allow read: if isOwner(uid) || isGeneralAdmin();
+      allow update, delete: if false;
+    }
+
+    match /branches/{branchId} {
+      allow read: if true;
+      allow create, update: if isGeneralAdmin();
+      allow delete: if false;
+    }
+
+    match /menuItems/{menuItemId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /orders/{orderId} {
+      allow create: if isSignedIn()
+        && request.resource.data.customerId == request.auth.uid;
+
+      allow read: if isSignedIn() && (
+        resource.data.customerId == request.auth.uid
+        || isGeneralAdmin()
+        || ((isBranchAdmin() || isEmployee()) && sameBranch(resource.data.branchId))
+        || (isRider() && resource.data.delivery.riderId == request.auth.uid)
+      );
+
+      allow update: if isGeneralAdmin()
+        || ((isBranchAdmin() || isEmployee()) && sameBranch(resource.data.branchId))
+        || (isRider() && resource.data.delivery.riderId == request.auth.uid);
+
+      allow delete: if false;
+    }
+
+    match /riders/{uid} {
+      allow create: if isGeneralAdmin()
+        || (isBranchAdmin() && request.resource.data.branchId == currentUserDoc().branchId);
+      allow read: if isOwner(uid)
+        || isGeneralAdmin()
+        || isBranchAdmin()
+        || isEmployee();
+      allow update: if isGeneralAdmin()
+        || (isBranchAdmin() && resource.data.branchId == currentUserDoc().branchId);
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
